@@ -1,0 +1,227 @@
+diff --git a/apps/backend/src/article/article.module.ts b/apps/backend/src/article/article.module.ts
+index 210c164..5461e7d 100644
+--- a/apps/backend/src/article/article.module.ts
++++ b/apps/backend/src/article/article.module.ts
+@@ -2,7 +2,9 @@ import { MiddlewareConsumer, Module, NestModule, RequestMethod } from '@nestjs/c
+ import { MikroOrmModule } from '@mikro-orm/nestjs';
+ import { AuthMiddleware } from '../user/auth.middleware';
+ import { User } from '../user/user.entity';
++import { Tag } from '../tag/tag.entity';
+ import { UserModule } from '../user/user.module';
++import { TagModule } from '../tag/tag.module';
+ import { ArticleController } from './article.controller';
+ import { Article } from './article.entity';
+ import { ArticleService } from './article.service';
+@@ -10,7 +12,7 @@ import { Comment } from './comment.entity';
+ 
+ @Module({
+   controllers: [ArticleController],
+-  imports: [MikroOrmModule.forFeature({ entities: [Article, Comment, User] }), UserModule],
++  imports: [MikroOrmModule.forFeature({ entities: [Article, Comment, User, Tag] }), UserModule,TagModule],
+   providers: [ArticleService],
+ })
+ export class ArticleModule implements NestModule {
+diff --git a/apps/backend/src/article/article.service.ts b/apps/backend/src/article/article.service.ts
+index a3f04fc..2d2ecea 100644
+--- a/apps/backend/src/article/article.service.ts
++++ b/apps/backend/src/article/article.service.ts
+@@ -5,6 +5,7 @@ import { EntityRepository } from '@mikro-orm/mysql';
+ 
+ import { User } from '../user/user.entity';
+ import { Article } from './article.entity';
++import { Tag } from '../tag/tag.entity';
+ import { IArticleRO, IArticlesRO, ICommentsRO } from './article.interface';
+ import { Comment } from './comment.entity';
+ import { CreateArticleDto, CreateCommentDto } from './dto';
+@@ -19,6 +20,8 @@ export class ArticleService {
+     private readonly commentRepository: EntityRepository<Comment>,
+     @InjectRepository(User)
+     private readonly userRepository: EntityRepository<User>,
++    @InjectRepository(Tag)
++    private readonly tagRepository: EntityRepository<Tag>,
+   ) {}
+ 
+   async findAll(userId: number, query: Record<string, string>): Promise<IArticlesRO> {
+@@ -65,7 +68,7 @@ export class ArticleService {
+     }
+ 
+     const articles = await qb.getResult();
+-
++    // console.log('articlesssssss', articles);
+     return { articles: articles.map((a) => a.toJSON(user!)), articlesCount };
+   }
+ 
+@@ -108,7 +111,7 @@ export class ArticleService {
+     const article = await this.articleRepository.findOneOrFail({ slug }, { populate: ['author'] });
+     const user = await this.userRepository.findOneOrFail(userId);
+     const comment = this.commentRepository.getReference(id);
+-
++    // console.log('articlesssssss', articles);
+     if (article.comments.contains(comment)) {
+       article.comments.remove(comment);
+       await this.em.removeAndFlush(comment);
+@@ -154,10 +157,25 @@ export class ArticleService {
+       { populate: ['followers', 'favorites', 'articles'] },
+     );
+     const article = new Article(user!, dto.title, dto.description, dto.body);
+-    article.tagList.push(...dto.tagList);
++    let tagString = new String(dto.tagList)
++      .split(',')
++      .map((tag) => tag.trim())
++      .filter((tag) => tag.length > 0);
++    article.tagList.push(...tagString);
++
++    // Update new Tags start
++    const globalTagList = await this.tagRepository.findAll();
++    const globalTagString = globalTagList.map((tag) => tag.tag);
++    const newTagStrings = tagString.filter((tag) => !globalTagString.includes(tag));
++    const newTags = newTagStrings.map((tag) => new Tag(tag));
++    // console.log("bbbbbbbb",newTags,tagString,article.tagList,globalTagList);
++    for (const tag of newTags) {
++      await this.tagRepository.persistAndFlush(tag);   // Code can be optimised further
++    }
++    // Update new Tags ends, TODO move to a new function
++
+     user?.articles.add(article);
+     await this.em.flush();
+-
+     return { article: article.toJSON(user!) };
+   }
+ 
+diff --git a/apps/backend/src/tag/tag.controller.ts b/apps/backend/src/tag/tag.controller.ts
+index 91cbb4c..31382e3 100644
+--- a/apps/backend/src/tag/tag.controller.ts
++++ b/apps/backend/src/tag/tag.controller.ts
+@@ -1,4 +1,4 @@
+-import { Controller, Get } from '@nestjs/common';
++import { Controller, Get, Post, Body } from '@nestjs/common';
+ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+ import { ITagsRO } from './tag.interface';
+ import { TagService } from './tag.service';
+@@ -11,6 +11,13 @@ export class TagController {
+ 
+   @Get()
+   async findAll(): Promise<ITagsRO> {
++    // const tags = await this.tagService.findAll();
++    // console.log("ooooooo",tags);
+     return this.tagService.findAll();
+   }
++
++  // @Post()
++  // async create(@Body() tags: string[]): Promise<ITagsRO> {
++  //   return this.tagService.create(tags);
++  // }
+ }
+diff --git a/apps/backend/src/tag/tag.entity.ts b/apps/backend/src/tag/tag.entity.ts
+index 803cf28..3cb5721 100644
+--- a/apps/backend/src/tag/tag.entity.ts
++++ b/apps/backend/src/tag/tag.entity.ts
+@@ -7,4 +7,8 @@ export class Tag {
+ 
+   @Property()
+   tag: string;
++
++  constructor(tag: string = '') {
++    this.tag = tag;
++  }
+ }
+diff --git a/apps/backend/src/tag/tag.module.ts b/apps/backend/src/tag/tag.module.ts
+index 31eb785..05c44f2 100644
+--- a/apps/backend/src/tag/tag.module.ts
++++ b/apps/backend/src/tag/tag.module.ts
+@@ -7,7 +7,7 @@ import { MikroOrmModule } from '@mikro-orm/nestjs';
+ 
+ @Module({
+   controllers: [TagController],
+-  exports: [],
++  exports: [TagService],
+   imports: [MikroOrmModule.forFeature({ entities: [Tag] }), UserModule],
+   providers: [TagService],
+ })
+diff --git a/apps/backend/src/tag/tag.repository.ts b/apps/backend/src/tag/tag.repository.ts
+new file mode 100644
+index 0000000..1716e5e
+--- /dev/null
++++ b/apps/backend/src/tag/tag.repository.ts
+@@ -0,0 +1,11 @@
++import { EntityRepository } from '@mikro-orm/mysql';
++import { Tag } from './tag.entity';
++
++export class TagRepository extends EntityRepository<Tag> {
++    
++    // async create(data: RequiredEntityData<Tag>): Promise<Tag> {
++    //     const tag = new Tag(data);
++    //     await this.persistAndFlush(tag);
++    //     return tag;
++    //   }
++}
+diff --git a/apps/backend/src/tag/tag.service.ts b/apps/backend/src/tag/tag.service.ts
+index 6bf57b2..0198624 100644
+--- a/apps/backend/src/tag/tag.service.ts
++++ b/apps/backend/src/tag/tag.service.ts
+@@ -15,4 +15,15 @@ export class TagService {
+     const tags = await this.tagRepository.findAll();
+     return { tags: tags.map((tag) => tag.tag) };
+   }
++
++  // Not used, tobe deprecated
++  // async create(tags: string[]): Promise<ITagsRO> {
++  //   const newTags = tags.map((tag) => {
++  //     const newTag = new Tag();
++  //     newTag.tag = tag;
++  //     return newTag;
++  //   });
++  //   await this.tagRepository.persistAndFlush(newTags);
++  //   return this.findAll();
++  // }
+ }
+diff --git a/libs/articles/data-access/src/lib/+state/article-edit/article-edit.effects.ts b/libs/articles/data-access/src/lib/+state/article-edit/article-edit.effects.ts
+index 700e877..7d36922 100644
+--- a/libs/articles/data-access/src/lib/+state/article-edit/article-edit.effects.ts
++++ b/libs/articles/data-access/src/lib/+state/article-edit/article-edit.effects.ts
+@@ -16,7 +16,9 @@ export const publishArticle$ = createEffect(
+   ) => {
+     return actions$.pipe(
+       ofType(articleEditActions.publishArticle),
++      // tap(([_, data]) => console.log("11111",data)),
+       concatLatestFrom(() => store.select(ngrxFormsQuery.selectData)),
++      // tap(([_, data]) => console.log("2222",data)),
+       concatMap(([_, data]) =>
+         articlesService.publishArticle(data).pipe(
+           tap((result) => router.navigate(['article', result.article.slug])),
+diff --git a/libs/articles/data-access/src/lib/services/articles.service.ts b/libs/articles/data-access/src/lib/services/articles.service.ts
+index bc14316..5a2ae7e 100644
+--- a/libs/articles/data-access/src/lib/services/articles.service.ts
++++ b/libs/articles/data-access/src/lib/services/articles.service.ts
+@@ -39,6 +39,7 @@ export class ArticlesService {
+   }
+ 
+   publishArticle(article: Article): Observable<ArticleResponse> {
++    // console.log("tttt",article);
+     if (article.slug) {
+       return this.apiService.put<ArticleResponse, ArticleResponse>('/articles/' + article.slug, {
+         article: article,
+diff --git a/libs/articles/feature-article-edit/src/lib/article-edit.component.ts b/libs/articles/feature-article-edit/src/lib/article-edit.component.ts
+index c420201..3106546 100644
+--- a/libs/articles/feature-article-edit/src/lib/article-edit.component.ts
++++ b/libs/articles/feature-article-edit/src/lib/article-edit.component.ts
+@@ -55,10 +55,19 @@ export class ArticleEditComponent implements OnInit, OnDestroy {
+       .select(articleQuery.selectData)
+       .pipe(untilDestroyed(this))
+       .subscribe((article) => this.store.dispatch(formsActions.setData({ data: article })));
++    // this.store.select(ngrxFormsQuery.selectData).subscribe(data => {
++    //     console.log(data);
++    //   });
+   }
+ 
+   updateForm(changes: any) {
++    // console.log('changes', changes);
++    // console.log('data', this.data$);
++    // console.log('structure', this.structure$);
+     this.store.dispatch(formsActions.updateData({ data: changes }));
++    // console.log('changes', changes);
++    // console.log('data', this.data$);
++    // console.log('structure', this.structure$);
+   }
+ 
+   submit() {
